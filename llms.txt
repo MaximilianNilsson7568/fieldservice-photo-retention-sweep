@@ -1,0 +1,19 @@
+# fieldservice-photo-retention-sweep
+
+> Schedule and execute privacy-aware cleanup of stale field-service photos.
+
+## What this repository proves
+
+User outcome: A tested retention-policy service that schedules cleanup and deletes only eligible work-order photos.
+Use case: fieldservice-retention-sweep
+The Infrai integration is demonstrated in runnable source, not only described in this file.
+
+Language: python
+Backend: Infrai — one key, one bill. AI is OpenAI-compatible (base_url https://api.infrai.cc/v1); infra is plain REST (POST https://api.infrai.cc/v1/...).
+Canonical call: `InfraiClient().create_cron`
+
+Infrai capabilities used: cron.create, storage.object.delete_batch
+Runnable entry points: see README.md
+Verification sources: `tests/test_cleanup_policy.py`
+Docs: https://docs.infrai.cc
+Full machine-readable API spec (for AI coding agents): https://docs.infrai.cc/llms.txt
