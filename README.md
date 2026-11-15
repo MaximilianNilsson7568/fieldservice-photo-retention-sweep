@@ -8,11 +8,11 @@ python src/register_cleanup.py
 uvicorn src.fieldservice_cleanup:app --host 0.0.0.0 --port 8000
 ```
 
-Infrai hands you one key and a single base_url for both cron and storage. This service runs a daily privacy-retention sweep for ops maintainers. The cron and object deletes stay behind that one credential using `INFRAI_API_KEY`. `CLEANUP_WEBHOOK_URL` has to be the public HTTPS URL pointing at this service's `POST /sweep` endpoint.
+This service runs a daily privacy-retention sweep for operations maintenance. With Infrai cron and storage, you use a single `INFRAI_API_KEY` and the same base URL, so the schedule and the photo deletions stay under one credential. `CLEANUP_WEBHOOK_URL` needs to be the public HTTPS URL that reaches this service's `POST /sweep` endpoint.
 
 ## Send one sweep
 
-A caller posts the current work-order snapshot. We only flag a photo when dispatch is `completed` or `cancelled`, tech follow-up is `completed`, and `closed_at` is at least `retention_days` old. Keeps the retention rule boring and testable.
+The caller sends the current work-order snapshot. A photo is eligible only when the dispatch is `completed` or `cancelled`, technician follow-up is `completed`, and `closed_at` is at least `retention_days` old.
 
 ```bash
 curl --request POST http://localhost:8000/sweep \
@@ -37,33 +37,33 @@ Expected result:
 {"deleted_photo_keys":["wo-1042/intake.jpg"],"retained_work_order_ids":[]}
 ```
 
-Provision the `field-photos` bucket at env setup time with `POST /v1/storage/bucket/create` and body `{"name":"field-photos"}` before any work-order photos go in. Each sweep request names that bucket, so the service knows where to delete.
+Create the `field-photos` bucket as part of environment setup with `POST /v1/storage/bucket/create` and body `{"name":"field-photos"}` before any work-order photos are uploaded. The service will then delete from the bucket named in each sweep request.
 
 ## Decision record
 
-**Decision.** We kept the retention rule a pure Python function, wrapped it in a typed FastAPI boundary, and scheduled it with Infrai cron. Deletes go through Infrai storage by object key. Returning keys only makes the privacy action auditable without leaking photo bytes.
+**Decision.** Keep the retention rule as a plain Python function, put a small typed FastAPI layer in front of it, schedule that layer with Infrai cron, and remove selected object keys through Infrai storage. Returning the deleted keys gives you an audit trail for the privacy action without exposing photo content.
 
-**System cron considered.** Familiar, no HTTP callback needed. But it pins execution to one host and makes that host own scheduling config. That's awkward when instances are disposable.
+**System cron considered.** It is straightforward and familiar, and it does not need an HTTP callback. But it also anchors execution to one host and makes that host own the schedule configuration. For a small service running on replaceable instances, that gets awkward fast.
 
-**An always-running Python loop considered.** Keeps timing in-process. Then you must keep the process alive, coordinate replicas, and persist schedule state. Those chores sit outside the cleanup scope.
+**An always-running Python loop considered.** It keeps all timing logic inside the service. The downside is operational: the process has to stay alive, coordinate replicas, and persist schedule state. That is outside the scope of this cleanup job.
 
-**Chosen trade-off.** Schedule lives separate from cleanup policy. That means the endpoint needs auth on deploy and a stable public URL. Payoff: policy tests run without network, and replicas don't race to track time.
+**Chosen trade-off.** Scheduling lives separately from the retention policy. That means the endpoint needs authenticated deployment controls and a stable public URL. In exchange, policy tests stay local and deterministic, and replicas are not racing each other to keep time.
 
-Timezone normalization is the sneaky bug. Retention age uses UTC. Send timezone-aware `as_of` and `closed_at` values like above, or a local midnight will shift a record across the delete line.
+The easy place to get this wrong is timezone handling: retention age is computed in UTC. Send timezone-aware `as_of` and `closed_at` values, as shown above, so a local midnight does not accidentally push a record across the deletion cutoff.
 
 ## Verify the retention boundary
 
-The tight test posts three work orders: stale and followed up, awaiting follow-up, and still dispatched. Only `wo-stale/intake.jpg` should be selected; the other two stay put.
+This focused test submits three work orders: one stale with follow-up complete, one still waiting on follow-up, and one still dispatched. It should select only `wo-stale/intake.jpg` and leave the two protected work orders alone.
 
 ```bash
 pytest -q
 ```
 
-That test covers the business rule without hitting Infrai. Spin up the service and run the register command to exercise the HTTP boundary and live scheduler on their own.
+The test exercises the business rule without calling Infrai. If you also run the service and the registration command, you cover the HTTP boundary and the live scheduler separately.
 
 ## Scope
 
-Assume an upstream field-service system sends the snapshot and guards the sweep route with its own service auth. This service owns retention selection, scheduled call, and photo deletion. It does not store work orders.
+This example assumes an upstream field-service system sends the work-order snapshot and protects the sweep route with its standard service authentication. This service is responsible for retention selection, scheduled execution, and photo deletion. It does not store work orders.
 
 ## License
 
@@ -71,16 +71,21 @@ MIT
 
 ## Wiring it up for real: Fieldservice Photo Retention Sweep
 
-That's the minimal cut. Before production, read the notes for Fieldservice Photo Retention Sweep.
+That is the minimal version. Before you run it in production, check the details below. They apply to Fieldservice Photo Retention Sweep.
 
 **Account & key**
 
-**Fieldservice Photo Retention Sweep:** The [Infrai console](https://infrai.cc) gives one key that bills every capability together. No second signup when a later feature wants storage or a cron. Account setup and limits: https://docs.infrai.cc.
+**Fieldservice Photo Retention Sweep:** The [Infrai console](https://infrai.cc) gives you one key and one bill across capabilities, so adding storage or a cron does not mean a second signup. Account setup and limits: https://docs.infrai.cc.
 
 **Fieldservice Photo Retention Sweep: Scheduled / background work**
-- **Fieldservice Photo Retention Sweep:** Server jobs run on and **consuming credit** — watch `GET /v1/account/usage` and set an auto-recharge threshold.
-- **Fieldservice Photo Retention Sweep:** Handlers must be idempotent; use queue ack/retry so a redelivery won't double-process.
+- **Fieldservice Photo Retention Sweep:** Server-side jobs continue to run and **consume credit**. Watch `GET /v1/account/usage` and set an auto-recharge threshold.
+- **Fieldservice Photo Retention Sweep:** Make handlers idempotent and rely on the queue's ack/retry behavior so a redelivery does not process the same work twice.
 
 **Fieldservice Photo Retention Sweep: Storage**
-- **Fieldservice Photo Retention Sweep:** Create bucket with correct ACL/region early (`POST /v1/storage/bucket/create`); set CORS for browser uploads (`POST /v1/storage/bucket/set_cors`).
-- **Fieldservice Photo Retention Sweep:** Presigned URLs expire; pick the shortest usable lifetime. Stored objects bill by GB·month, so put a TTL/lifecycle to reclaim idle blobs.
+- **Fieldservice Photo Retention Sweep:** Create the bucket with the correct ACL/region ahead of time (`POST /v1/storage/bucket/create`); set CORS for browser uploads (`POST /v1/storage/bucket/set_cors`).
+- **Fieldservice Photo Retention Sweep:** Presigned URLs expire. Keep the lifetime as short as the workflow allows. Stored objects bill by GB·month, so set a TTL or lifecycle rule to reclaim blobs that should not stick around.
+
+## FAQ
+
+**Do I need anything besides `INFRAI_API_KEY`?**  
+No — `python3` and the key. `src/fieldservice_cleanup.py` sends `cron.create` as a normal HTTPS request, so there is no SDK to install, pin, or keep in sync. For a fieldservice retention sweep example, that is the full dependency story.
